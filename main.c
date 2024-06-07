@@ -53,6 +53,12 @@ typedef struct {
     Pager* pager;
 } Table;
 
+typedef struct {
+    uint32_t row_num;
+    Table* table;
+    bool end_of_table;
+} Cursor;
+
 typedef enum {
    META_COMMAND_SUCCESS,
    META_COMMAND_UNRECOGNIZED_COMMAND 
@@ -86,6 +92,24 @@ typedef struct {
     size_t buffer_length;
     ssize_t input_length;
 } InputBuffer;
+
+Cursor* table_start(Table* table) {
+  Cursor* cursor = malloc(sizeof(Cursor));
+  cursor->table = table;
+  cursor->row_num = 0;
+  cursor->end_of_table = (table->num_rows == 0);
+
+  return cursor;
+}
+
+Cursor* table_end(Table* table) {
+  Cursor* cursor = malloc(sizeof(Cursor));
+  cursor->table = table;
+  cursor->row_num = table->num_rows;
+  cursor->end_of_table = true;
+
+  return cursor;
+}
 
 void pager_flush(Pager* pager, uint32_t page_num, uint32_t size){
     printf("testing");
@@ -236,13 +260,21 @@ void db_close(Table* table){
 }
 
 // figure out where the to read/write memory for a specific row
-void* row_slot(Table* table, uint32_t row_num){
+void* cursor_value(Cursor* cursor){
+    uint32_t row_num = cursor->row_num;
     uint32_t page_num = row_num / ROWS_PER_PAGE;
 
-    void* page = get_page(table->pager, page_num);
+    void* page = get_page(cursor->table->pager, page_num);
     uint32_t row_offset = row_num % ROWS_PER_PAGE;
     uint32_t byte_offset = row_offset * ROW_SIZE;
     return page + byte_offset;
+}
+
+void cursor_advance(Cursor* cursor){
+    cursor->row_num += 1;
+    if(cursor->row_num >= cursor->table->num_rows){
+        cursor->end_of_table = true;
+    }
 }
 
 void read_input(InputBuffer* input_buffer){
@@ -272,6 +304,7 @@ MetaCommandResult do_meta_command(InputBuffer* input_buffer,Table* table){
     }
 }
 
+// linter for inserts
 PrepareResult prepare_insert(InputBuffer* input_buffer, Statement* statement){
     statement->type = STATEMENT_INSERT;
     char* keyword = strtok(input_buffer->buffer, " ");
@@ -304,6 +337,7 @@ PrepareResult prepare_insert(InputBuffer* input_buffer, Statement* statement){
     return PREPARE_SUCCESS;
 }
 
+// linter of statements
 PrepareResult prepare_statement(InputBuffer* input_buffer, Statement* statement) {
     if (strncmp(input_buffer->buffer,"insert",6) == 0) {
         return prepare_insert(input_buffer, statement);
@@ -317,24 +351,31 @@ PrepareResult prepare_statement(InputBuffer* input_buffer, Statement* statement)
     return PREPARE_UNRECOGNIZED_STATEMENT;
 }
 
+// handles exectution of inserts
 ExecuteResult execute_insert(Statement* statement,Table* table) {
     if(table->num_rows >= TABLE_MAX_ROWS){
         return EXECUTE_TABLE_FULL;
     }
 
     Row* row_to_insert = &(statement->row_to_insert);
-    serialize_row(row_to_insert,row_slot(table, table->num_rows));
+    Cursor* cursor = table_end(table);
+    serialize_row(row_to_insert, cursor_value(cursor));
     table->num_rows +=1;
 
     return EXECUTE_SUCCESS;
 }
 
+// handles execution of selects
 ExecuteResult execute_select(Statement* statement,Table* table) {
+    Cursor* cursor = table_start(table);
     Row row;
-    for (uint32_t i = 0;i<table->num_rows;i++) {
-        deserialize_row(row_slot(table,i), &row);
+    while (!(cursor->end_of_table)) {
+        deserialize_row(cursor_value(cursor), &row);
         print_row(&row);
+        cursor_advance(cursor);
     }
+
+    free(cursor);
 
     return EXECUTE_SUCCESS;
 }
